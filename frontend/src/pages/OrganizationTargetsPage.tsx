@@ -1,179 +1,210 @@
-import clsx from "clsx";
-import { PropsWithChildren, ReactNode, useState } from "react";
-import FetchLoader from "../components/FetchLoader";
+import Decimal from "decimal.js";
+import { useMemo } from "react";
+import FetchLoader from "../data-loading/FetchLoader";
+import { useFetch } from "../data-loading/use-fetch";
 import * as formatter from "../formatter";
-import { useFetch } from "../hooks/use-fetch";
 import {
-  cellCurrentlyEdited,
-  editableCell,
-  summaryCell,
-  tableOverflowContainer,
-  tableTargets,
-} from "./OrganizationTargetsPage.module.css";
+  MetricsTableRenderer,
+  RowsConfiguration,
+} from "../metrics-table/MetricsTableRenderer";
 import {
-  MonthlyMMRTargets,
-  MonthlyOrQuarterMMRTargets,
-  OrganizationMMRTargets,
-  isMonthlyTarget,
-  targetKey,
-  useTargetsComputationReducer,
-} from "./organization-targets";
+  ExtractMetricsNames,
+  MetricValue,
+  MetricsTableConfiguration,
+} from "../metrics-table/metrics-table";
+import { SubscribableMetricsTable } from "../metrics-table/subscribable-metrics-table";
+import {
+  average,
+  churnedMRR,
+  endingMRR,
+  expansionMRR,
+} from "../metrics/metrics";
+import { isMonth } from "../periods";
+
+const OrganizationMetricsConfiguration = {
+  metrics: [
+    {
+      name: "beginningMRR",
+      compute: (table, period, currentValue) => {
+        if (isMonth(period)) {
+          return period.month === 1
+            ? currentValue
+            : table.getValue("endingMRR", {
+                month: period.month - 1,
+                year: period.year,
+              });
+        }
+      },
+      aggregate: "first",
+    },
+    {
+      name: "churnRate",
+      aggregate: (table, includedPeriods) => {
+        const aggregateChurnedMRR = Decimal.sum(
+          ...includedPeriods.map((x) =>
+            Decimal.mul(
+              table.getValue("beginningMRR", x) ?? new Decimal(0),
+              table.getValue("churnRate", x) ?? new Decimal(0),
+            ),
+          ),
+        );
+        const aggregateAverageBeginningMRR = average(
+          ...includedPeriods.map(
+            (x) => table.getValue("beginningMRR", x) ?? new Decimal(0),
+          ),
+        );
+
+        return aggregateChurnedMRR.div(aggregateAverageBeginningMRR);
+      },
+    },
+    {
+      name: "expansionRate",
+      aggregate: (table, includedPeriods) => {
+        const aggregateExpansionMRR = Decimal.sum(
+          ...includedPeriods.map((x) =>
+            Decimal.mul(
+              table.getValue("beginningMRR", x) ?? new Decimal(0),
+              table.getValue("expansionRate", x) ?? new Decimal(0),
+            ),
+          ),
+        );
+
+        const aggregateAverageBeginningMRR = average(
+          ...includedPeriods.map(
+            (x) => table.getValue("beginningMRR", x) ?? new Decimal(0),
+          ),
+        );
+
+        return aggregateExpansionMRR.div(aggregateAverageBeginningMRR);
+      },
+    },
+    {
+      name: "newBusinessMRR",
+      aggregate: "sum",
+    },
+    {
+      name: "churnedMRR",
+      compute: (table, period) => {
+        const beginningMRR = table.getValue("beginningMRR", period);
+        const churnRate = table.getValue("churnRate", period);
+        if (beginningMRR && churnRate) {
+          return churnedMRR({ beginningMRR, churnRate });
+        }
+      },
+    },
+    {
+      name: "expansionMRR",
+      compute: (table, period) => {
+        const beginningMRR = table.getValue("beginningMRR", period);
+        const expansionRate = table.getValue("expansionRate", period);
+        if (beginningMRR && expansionRate) {
+          return expansionMRR({ beginningMRR, expansionRate });
+        }
+      },
+    },
+    {
+      name: "endingMRR",
+      compute: (table, period) => {
+        const beginningMRR = table.getValue("beginningMRR", period);
+        const newBusinessMRR = table.getValue("newBusinessMRR", period);
+        const churnedMRR = table.getValue("newBusinessMRR", period);
+        const expansionMRR = table.getValue("expansionMRR", period);
+        if (beginningMRR && newBusinessMRR && churnedMRR && expansionMRR) {
+          return endingMRR({
+            beginningMRR,
+            newBusinessMRR,
+            churnedMRR,
+            expansionMRR,
+          });
+        }
+      },
+      aggregate: "last",
+    },
+  ],
+  aggregates: {
+    quarter: true,
+    year: true,
+  },
+} as const satisfies MetricsTableConfiguration;
+
+const OrganizationRowsConfiguration = {
+  beginningMRR: {
+    header: "Beginning MRR",
+    formatter: formatter.money,
+  },
+  newBusinessMRR: {
+    header: "New Business MRR",
+    formatter: formatter.money,
+    editable: true,
+  },
+  churnRate: {
+    header: "Churn Rate",
+    formatter: formatter.percent,
+  },
+  expansionRate: {
+    header: "Expansion Rate",
+    formatter: formatter.percent,
+  },
+  endingMRR: {
+    header: "Ending MRR",
+    formatter: formatter.money,
+  },
+} as const satisfies RowsConfiguration<typeof OrganizationMetricsConfiguration>;
 
 export default function OrganizationTargetsPage() {
-  const query = useFetch<MonthlyMMRTargets[]>("monthlyTargets.json");
+  const query = useFetch<ApiMRRTargets[]>("monthlyTargets.json");
+  const table = useMemo(
+    () =>
+      new SubscribableMetricsTable(
+        OrganizationMetricsConfiguration,
+        convertApiMRRTargetsToMetricValues(query.data || []),
+      ),
+    [query.data],
+  );
 
   return (
     <FetchLoader {...query}>
-      <OrganizationTargetsTable data={query.data!} />
+      <MetricsTableRenderer
+        table={table}
+        rows={OrganizationRowsConfiguration}
+      />
     </FetchLoader>
   );
 }
 
-function OrganizationTargetsTable(props: { data: MonthlyMMRTargets[] }) {
-  const [data, dispatch] = useTargetsComputationReducer(props.data);
-
-  return (
-    <div className={tableOverflowContainer}>
-      <table className={tableTargets}>
-        <caption>
-          <div>Targets</div>
-        </caption>
-        <thead>
-          <tr>
-            <th></th>
-            {data.map((target) => (
-              <th
-                key={targetKey(target)}
-                className={clsx({ [summaryCell]: !isMonthlyTarget(target) })}
-              >
-                {isMonthlyTarget(target)
-                  ? formatter.monthYear(target)
-                  : `Q${target.quarter}`}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          <TableRow
-            rowHeader="Beginning MRR"
-            data={data}
-            cell={(target) => formatter.money(target.beginningMRR)}
-            cellMode={(target) =>
-              isMonthlyTarget(target) ? "standard" : "summary"
-            }
-          />
-          <TableRow
-            rowHeader="New Business MRR"
-            data={data}
-            cell={(target) => formatter.money(target.newBusinessMRR)}
-            cellMode={(target) =>
-              isMonthlyTarget(target) ? "editable" : "summary"
-            }
-            onCellChange={(target, value) => {
-              if (!isMonthlyTarget(target)) return;
-              dispatch({
-                type: "updateNewBusinessMRR",
-                month: target.month,
-                year: target.year,
-                value: value == undefined ? 0 : parseEditableCellNumber(value),
-              });
-            }}
-          />
-          <TableRow
-            rowHeader="Churn Rate"
-            data={data}
-            cell={(target) => formatter.percent(target.churnRate / 100)}
-            cellMode={(target) =>
-              isMonthlyTarget(target) ? "standard" : "summary"
-            }
-          />
-          <TableRow
-            rowHeader="Expansion Rate"
-            data={data}
-            cell={(target) => formatter.percent(target.expansionRate / 100)}
-            cellMode={(target) =>
-              isMonthlyTarget(target) ? "standard" : "summary"
-            }
-          />
-          <TableRow
-            rowHeader="Ending MRR"
-            data={data}
-            cell={(target) => formatter.money(target.endingMRR)}
-            cellMode={(target) =>
-              isMonthlyTarget(target) ? "standard" : "summary"
-            }
-          />
-        </tbody>
-      </table>
-    </div>
-  );
+interface ApiMRRTargets {
+  month: number;
+  year: number;
+  beginningMRR: number;
+  newBusinessMRR: number;
+  churnRate: number;
+  expansionRate: number;
+  expansionMRR: number;
+  endingMRR: number;
 }
 
-type CellMode = "standard" | "editable" | "summary";
-
-function TableRow({
-  rowHeader,
-  data,
-  cell,
-  cellMode,
-  onCellChange,
-}: {
-  rowHeader: ReactNode;
-  data: OrganizationMMRTargets;
-  cell: (target: MonthlyOrQuarterMMRTargets) => ReactNode;
-  cellMode?: (target: MonthlyOrQuarterMMRTargets) => CellMode;
-  onCellChange?: (
-    target: MonthlyOrQuarterMMRTargets,
-    value: string | undefined,
-  ) => unknown;
-}) {
-  return (
-    <tr>
-      <th>{rowHeader}</th>
-      {data?.map((target) => (
-        <TableCell
-          key={targetKey(target)}
-          cellMode={cellMode?.(target) ?? "standard"}
-          onChange={(value) => onCellChange?.(target, value)}
-        >
-          {cell(target)}
-        </TableCell>
-      ))}
-    </tr>
+function convertApiMRRTargetsToMetricValues(
+  targets: ApiMRRTargets[],
+): MetricValue<ExtractMetricsNames<typeof OrganizationMetricsConfiguration>>[] {
+  return targets.flatMap((target) =>
+    [
+      "beginningMRR",
+      "newBusinessMRR",
+      "churnRate",
+      "expansionRate",
+      "endingMRR",
+    ].flatMap((metric) => ({
+      metric: metric as ExtractMetricsNames<
+        typeof OrganizationMetricsConfiguration
+      >,
+      period: {
+        year: target.year,
+        month: target.month,
+      },
+      value: ["churnRate", "expansionRate"].includes(metric)
+        ? // We fix the API to return percentages as decimals
+          new Decimal(target[metric as keyof ApiMRRTargets] / 100)
+        : new Decimal(target[metric as keyof ApiMRRTargets]),
+    })),
   );
-}
-
-function TableCell({
-  cellMode,
-  onChange,
-  children,
-}: PropsWithChildren<{
-  cellMode: CellMode;
-  onChange?: (value: string | undefined) => unknown;
-}>) {
-  const [currentlyEdited, setCurrentlyEdited] = useState(false);
-  return (
-    /** I chose a contenteditable here for simplicity, but ideally which should have a better component with an overlay input number */
-    <td
-      className={clsx({
-        [editableCell]: cellMode === "editable",
-        [summaryCell]: cellMode === "summary",
-        [cellCurrentlyEdited]: currentlyEdited,
-      })}
-      contentEditable={cellMode === "editable"}
-      suppressContentEditableWarning
-      onBlur={(e) => {
-        onChange?.(e.currentTarget.textContent || undefined);
-        setCurrentlyEdited(false);
-      }}
-      onInput={() => setCurrentlyEdited(true)}
-    >
-      {children}
-    </td>
-  );
-}
-
-function parseEditableCellNumber(value: string): number {
-  const parsed = parseFloat(value.replace(/[^0-9.]/g, ""));
-  return isNaN(parsed) ? 0 : parsed;
 }

@@ -30,6 +30,35 @@
     padding: 0.4em 0.5em;
     min-width: 7em;
     text-align: right;
+
+    :is(input) {
+      display: none;
+      text-align: right;
+    }
+  }
+
+  :is(td).editableCell {
+    cursor: pointer;
+    color: var(--var-color-primary);
+  }
+
+  :is(td).cellCurrentlyEdited {
+    :is(input) {
+      display: inline-block;
+      position: relative;
+      border: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      color: var(--var-color-primary);
+    }
+  }
+
+  .summaryCell {
+    border-right: 1px solid var(--var-color-borders);
+    border-left: 1px solid var(--var-color-borders);
+    background-color: var(--var-color-gray-50);
+    font-weight: bold;
   }
 
   th:first-child {
@@ -50,25 +79,6 @@
     padding: 0.2em 0.5em;
     text-align: right;
   }
-}
-
-.editableCell {
-  color: var(--var-color-primary);
-
-  :is(br) {
-    display: none;
-  }
-}
-
-.cellCurrentlyEdited {
-  font-style: italic;
-}
-
-.summaryCell {
-  border-right: 1px solid var(--var-color-borders);
-  border-left: 1px solid var(--var-color-borders);
-  background-color: var(--var-color-gray-50);
-  font-weight: bold;
 }
 
 @media (prefers-color-scheme: light) {
